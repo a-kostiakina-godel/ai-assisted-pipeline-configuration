@@ -71,3 +71,36 @@ Keep YAML formatting consistent with the rest of the workflow.
 
 Deliverable
 Output the complete updated YAML with the new security-scan job added. No explanations or comments.
+
+Analyze .github/workflows/playwright-tests.yml and modify the existing playwright-tests job to also publish Playwright HTML results to GitHub Pages. Do not create a new job.
+
+Constraints
+Make changes only within the playwright-tests job.
+Keep all current behavior intact (installs, tests, artifacts, timeouts, etc.).
+Publishing requirements (inside this job)
+
+Add the necessary job-level permissions:
+permissions:
+pages: write
+id-token: write
+
+Add a GitHub Pages deploy block at the end of the job that runs even if tests fail and only on main:
+Use if: always() && github.ref == 'refs/heads/main' on the publishing steps.
+Set environment: github-pages.
+
+Steps to add (in order, at the end of the job):
+Prepare history: create/append history.json in playwright-report/.
+If a previous history.json exists on the gh-pages branch, fetch it (e.g., checkout gh-pages to a temp dir) and append a new record.
+Record useful fields (timestamp, run URL, commit SHA, ref/branch, job conclusion, counts if available).
+Write the updated history.json back into playwright-report/.
+Upload site artifact using actions/upload-pages-artifact@v3 with path: playwright-report/.
+Deploy to Pages using actions/deploy-pages@v4.
+
+Details
+The publish steps must not block PRs; they should only execute on main.
+Keep the publish steps within playwright-tests and ensure they run after tests (and on failure via if: always()).
+Use shell/JQ (or Node) to safely merge JSON for history.json. If no prior history exists, create a new array and append the current entry.
+
+Deliverable
+Output the complete updated YAML for .github/workflows/playwright-tests.yml.
+No extra commentary.
