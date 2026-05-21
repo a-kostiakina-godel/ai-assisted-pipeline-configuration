@@ -3,10 +3,12 @@ name: Playwright Tests
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
 
 # Cancel in-progress runs for the same PR
 concurrency:
-  group: playwright-${{ github.event.pull_request.number }}
+  group: playwright-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 # Minimal read-only permissions
@@ -17,12 +19,6 @@ jobs:
   playwright-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
     env:
       CI: true
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -93,9 +89,27 @@ jobs:
               }]
             }'
 
+  deploy-pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: playwright-tests
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    env:
+      CI: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       # Fetch existing history from gh-pages and build updated history.json
       - name: Prepare history.json
-        if: always() && github.ref == 'refs/heads/main'
         run: |
           mkdir -p playwright-report
 
@@ -113,21 +127,19 @@ jobs:
             --arg run_url   "$RUN_URL" \
             --arg sha       "${{ github.sha }}" \
             --arg ref       "${{ github.ref }}" \
-            --arg job_status "${{ job.status }}" \
+            --arg job_status "${{ needs.playwright-tests.result }}" \
             '{timestamp: $ts, run_url: $run_url, sha: $sha, ref: $ref, job_status: $job_status}')
 
           echo "$PRIOR_HISTORY" | jq --argjson entry "$NEW_ENTRY" '. + [$entry]' > playwright-report/history.json
 
       # Upload playwright-report/ as the Pages artifact
       - name: Upload Pages artifact
-        if: always() && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: playwright-report/
 
       # Deploy to GitHub Pages
       - name: Deploy to GitHub Pages
-        if: always() && github.ref == 'refs/heads/main'
         uses: actions/deploy-pages@v4
 
   security-scan:
