@@ -8,7 +8,7 @@ import {
 } from "../../src/data/users";
 import { INVENTORY_URL } from "../../src/utils/urls";
 
-// test change
+// test change updated
 test.describe("Auth", () => {
   test.beforeEach(async ({ authPage }) => {
     await authPage.open();
