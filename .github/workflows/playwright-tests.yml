@@ -21,33 +21,26 @@ jobs:
     timeout-minutes: 30
     env:
       CI: true
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      # Check out the repository code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Set up Node.js LTS with npm cache
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
           cache: npm
 
-      # Install project dependencies using frozen lockfile
       - name: Install dependencies
         run: npm ci
 
-      # Install Playwright browsers and OS-level dependencies
       - name: Install Playwright browsers
         run: npx playwright install --with-deps
 
-      # Run all Playwright tests in parallel
       - name: Run Playwright tests
         run: npx playwright test
 
-      # Upload HTML report for inspection regardless of test outcome
       - name: Upload HTML report
         if: always()
         uses: actions/upload-artifact@v4
@@ -57,7 +50,6 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      # Upload trace files for debugging failed tests
       - name: Upload traces
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,88 +59,12 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
-      # Notify Teams channel when the workflow fails
-      - name: Notify Teams on failure
-        if: failure()
-        run: |
-          curl -s -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json" \
-            -d '{
-              "@type": "MessageCard",
-              "@context": "https://schema.org/extensions",
-              "themeColor": "FF0000",
-              "summary": "Playwright Tests Failed",
-              "sections": [{
-                "activityTitle": "Playwright Tests Failed",
-                "facts": [
-                  { "name": "PR Title", "value": "${{ github.event.pull_request.title }}" },
-                  { "name": "Author",   "value": "${{ github.event.pull_request.user.login }}" },
-                  { "name": "Branch",   "value": "${{ github.head_ref }}" },
-                  { "name": "Run",      "value": "[View failed run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" }
-                ]
-              }]
-            }'
-
-  deploy-pages:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    needs: playwright-tests
-    if: github.ref == 'refs/heads/main'
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-    env:
-      CI: true
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      # Fetch existing history from gh-pages and build updated history.json
-      - name: Prepare history.json
-        run: |
-          mkdir -p playwright-report
-
-          PRIOR_HISTORY="[]"
-          if git ls-remote --exit-code origin gh-pages > /dev/null 2>&1; then
-            git fetch origin gh-pages --depth=1 2>/dev/null || true
-            PRIOR_HISTORY=$(git show origin/gh-pages:history.json 2>/dev/null || echo "[]")
-          fi
-
-          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-
-          NEW_ENTRY=$(jq -n \
-            --arg ts        "$TIMESTAMP" \
-            --arg run_url   "$RUN_URL" \
-            --arg sha       "${{ github.sha }}" \
-            --arg ref       "${{ github.ref }}" \
-            --arg job_status "${{ needs.playwright-tests.result }}" \
-            '{timestamp: $ts, run_url: $run_url, sha: $sha, ref: $ref, job_status: $job_status}')
-
-          echo "$PRIOR_HISTORY" | jq --argjson entry "$NEW_ENTRY" '. + [$entry]' > playwright-report/history.json
-
-      # Upload playwright-report/ as the Pages artifact
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: playwright-report/
-
-      # Deploy to GitHub Pages
-      - name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
-
   security-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     continue-on-error: false
     env:
       CI: true
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout
@@ -183,3 +99,119 @@ jobs:
 
       - name: Fail on high or critical vulnerabilities
         run: npm audit --audit-level=high
+
+  deploy-pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [playwright-tests, security-scan]
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    env:
+      CI: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Playwright report
+        uses: actions/download-artifact@v4
+        with:
+          name: playwright-html-report
+          path: playwright-report/
+
+      - name: Verify report exists
+        run: |
+          if [ ! -f playwright-report/index.html ]; then
+            echo "::error::No Playwright HTML report found"
+            exit 1
+          fi
+
+      - name: Disable Jekyll
+        run: touch playwright-report/.nojekyll
+
+      - name: Fetch previous history
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TEST_RESULT: ${{ needs.playwright-tests.result }}
+        run: |
+          PAGES_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/history.json"
+          PRIOR_HISTORY=$(curl -fsSL "$PAGES_URL" 2>/dev/null || echo "[]")
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          NEW_ENTRY=$(jq -n \
+            --arg ts         "$TIMESTAMP" \
+            --arg run_url    "$RUN_URL" \
+            --arg sha        "$SHA" \
+            --arg ref        "$REF" \
+            --arg job_status "$TEST_RESULT" \
+            '{timestamp: $ts, run_url: $run_url, sha: $sha, ref: $ref, job_status: $job_status}')
+
+          echo "$PRIOR_HISTORY" | jq --argjson entry "$NEW_ENTRY" '. + [$entry] | .[-100:]' \
+            > playwright-report/history.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: playwright-report/
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
+
+  notify-on-failure:
+    runs-on: ubuntu-latest
+    needs: [playwright-tests, deploy-pages, security-scan]
+    if: failure()
+    env:
+      TEAMS_WEBHOOK_URL: ${{ secrets.TEAMS_WEBHOOK_URL }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      BRANCH: ${{ github.head_ref }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+    steps:
+      - name: Notify Teams on failure
+        run: |
+          cat > payload.json <<EOF
+          {
+            "type": "message",
+            "attachments": [{
+              "contentType": "application/vnd.microsoft.card.adaptive",
+              "content": {
+                "\$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.4",
+                "body": [
+                  {
+                    "type": "TextBlock",
+                    "size": "Large",
+                    "weight": "Bolder",
+                    "color": "Attention",
+                    "text": "Playwright Tests Failed"
+                  },
+                  {
+                    "type": "FactSet",
+                    "facts": [
+                      { "title": "PR Title:", "value": "${PR_TITLE}" },
+                      { "title": "Author:",   "value": "${PR_AUTHOR}" },
+                      { "title": "Branch:",   "value": "${BRANCH}" }
+                    ]
+                  }
+                ],
+                "actions": [
+                  { "type": "Action.OpenUrl", "title": "View Failed Run", "url": "${RUN_URL}" }
+                ]
+              }
+            }]
+          }
+          EOF
+          curl -s -H "Content-Type: application/json" -d @payload.json "$TEAMS_WEBHOOK_URL"
