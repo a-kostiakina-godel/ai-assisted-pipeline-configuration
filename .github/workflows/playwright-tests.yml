@@ -19,30 +19,31 @@ jobs:
     timeout-minutes: 30
     env:
       CI: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       # Check out the repository code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Set up Node.js LTS with Yarn cache
+      # Set up Node.js LTS with npm cache
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          cache: yarn
+          cache: npm
 
       # Install project dependencies using frozen lockfile
       - name: Install dependencies
-        run: yarn install --immutable --immutable-cache --check-cache
+        run: npm ci
 
       # Install Playwright browsers and OS-level dependencies
       - name: Install Playwright browsers
-        run: yarn playwright install --with-deps
+        run: npx playwright install --with-deps
 
       # Run all Playwright tests in parallel
       - name: Run Playwright tests
-        run: yarn playwright test
+        run: npx playwright test
 
       # Upload HTML report for inspection regardless of test outcome
       - name: Upload HTML report
@@ -52,6 +53,7 @@ jobs:
           name: playwright-html-report
           path: playwright-report/
           retention-days: 30
+          if-no-files-found: ignore
 
       # Upload trace files for debugging failed tests
       - name: Upload traces
@@ -61,6 +63,7 @@ jobs:
           name: playwright-traces
           path: test-results/**/trace*.zip
           retention-days: 30
+          if-no-files-found: ignore
 
       # Notify Teams channel when the workflow fails
       - name: Notify Teams on failure
