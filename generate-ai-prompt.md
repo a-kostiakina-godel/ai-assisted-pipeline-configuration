@@ -29,5 +29,78 @@ Minimal permissions (read-only) and concurrency to cancel in-progress runs per P
 Add a final steps order: checkout → setup-node → yarn install → playwright install → test → artifact uploads.
 Include brief comments explaining key steps.
 
+---
+
+Update the workflow file .github/workflows/playwright-tests.yml to add Microsoft Teams notifications with these exact requirements:
+
+Notification behavior
+Send a Teams message only when the workflow fails (if: failure()).
+Include in the message:
+Pull request title
+PR author
+Branch name
+Link to the failed workflow run
+Use a Teams webhook URL stored in GitHub Secrets as TEAMS_WEBHOOK_URL.
+
+Implementation details
+Use a final step at the end of the existing job so it runs even if earlier steps fail.
+Keep the rest of the workflow unchanged.
+
 Deliverable
-Output only the complete YAML. No additional explanation or commentary.
+Output the updated YAML (no explanations or comments).
+Deliverables
+Updated .github/workflows/playwright-tests.yml with Teams notification step
+
+---
+
+Update .github/workflows/playwright-tests.yml to add a new job named security-scan with the following exact requirements:
+
+Purpose
+Run a dependency vulnerability scan using npm audit.
+
+Behavior
+Run in parallel with the existing playwright-tests job (no dependency between them).
+Fail the workflow if high or critical severity vulnerabilities are detected.
+Use continue-on-error: false to ensure the job blocks PRs when vulnerabilities are found.
+Generate a concise summary report of vulnerabilities in the GitHub Actions summary (using $GITHUB_STEP_SUMMARY).
+
+Implementation details
+Use the same ubuntu-latest runner and Node.js setup as the main job.
+Include steps for checkout, setup-node (with npm cache), and the yarn audit command with appropriate severity filters.
+Keep YAML formatting consistent with the rest of the workflow.
+
+Deliverable
+Output the complete updated YAML with the new security-scan job added. No explanations or comments.
+
+Analyze .github/workflows/playwright-tests.yml and modify the existing playwright-tests job to also publish Playwright HTML results to GitHub Pages. Do not create a new job.
+
+Constraints
+Make changes only within the playwright-tests job.
+Keep all current behavior intact (installs, tests, artifacts, timeouts, etc.).
+Publishing requirements (inside this job)
+
+Add the necessary job-level permissions:
+permissions:
+pages: write
+id-token: write
+
+Add a GitHub Pages deploy block at the end of the job that runs even if tests fail and only on main:
+Use if: always() && github.ref == 'refs/heads/main' on the publishing steps.
+Set environment: github-pages.
+
+Steps to add (in order, at the end of the job):
+Prepare history: create/append history.json in playwright-report/.
+If a previous history.json exists on the gh-pages branch, fetch it (e.g., checkout gh-pages to a temp dir) and append a new record.
+Record useful fields (timestamp, run URL, commit SHA, ref/branch, job conclusion, counts if available).
+Write the updated history.json back into playwright-report/.
+Upload site artifact using actions/upload-pages-artifact@v3 with path: playwright-report/.
+Deploy to Pages using actions/deploy-pages@v4.
+
+Details
+The publish steps must not block PRs; they should only execute on main.
+Keep the publish steps within playwright-tests and ensure they run after tests (and on failure via if: always()).
+Use shell/JQ (or Node) to safely merge JSON for history.json. If no prior history exists, create a new array and append the current entry.
+
+Deliverable
+Output the complete updated YAML for .github/workflows/playwright-tests.yml.
+No extra commentary.

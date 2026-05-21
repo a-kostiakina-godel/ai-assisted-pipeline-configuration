@@ -3,10 +3,12 @@ name: Playwright Tests
 on:
   pull_request:
     branches: [ main ]
+  push:
+    branches: [ main ]
 
 # Cancel in-progress runs for the same PR
 concurrency:
-  group: playwright-${{ github.event.pull_request.number }}
+  group: playwright-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 # Minimal read-only permissions
@@ -19,30 +21,31 @@ jobs:
     timeout-minutes: 30
     env:
       CI: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       # Check out the repository code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Set up Node.js LTS with Yarn cache
+      # Set up Node.js LTS with npm cache
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
-          cache: yarn
+          cache: npm
 
       # Install project dependencies using frozen lockfile
       - name: Install dependencies
-        run: yarn install --immutable --immutable-cache --check-cache
+        run: npm ci
 
       # Install Playwright browsers and OS-level dependencies
       - name: Install Playwright browsers
-        run: yarn playwright install --with-deps
+        run: npx playwright install --with-deps
 
       # Run all Playwright tests in parallel
       - name: Run Playwright tests
-        run: yarn playwright test
+        run: npx playwright test
 
       # Upload HTML report for inspection regardless of test outcome
       - name: Upload HTML report
@@ -52,6 +55,7 @@ jobs:
           name: playwright-html-report
           path: playwright-report/
           retention-days: 30
+          if-no-files-found: ignore
 
       # Upload trace files for debugging failed tests
       - name: Upload traces
@@ -61,6 +65,7 @@ jobs:
           name: playwright-traces
           path: test-results/**/trace*.zip
           retention-days: 30
+          if-no-files-found: ignore
 
       # Notify Teams channel when the workflow fails
       - name: Notify Teams on failure
@@ -83,3 +88,98 @@ jobs:
                 ]
               }]
             }'
+
+  deploy-pages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: playwright-tests
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    env:
+      CI: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fetch existing history from gh-pages and build updated history.json
+      - name: Prepare history.json
+        run: |
+          mkdir -p playwright-report
+
+          PRIOR_HISTORY="[]"
+          if git ls-remote --exit-code origin gh-pages > /dev/null 2>&1; then
+            git fetch origin gh-pages --depth=1 2>/dev/null || true
+            PRIOR_HISTORY=$(git show origin/gh-pages:history.json 2>/dev/null || echo "[]")
+          fi
+
+          TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          NEW_ENTRY=$(jq -n \
+            --arg ts        "$TIMESTAMP" \
+            --arg run_url   "$RUN_URL" \
+            --arg sha       "${{ github.sha }}" \
+            --arg ref       "${{ github.ref }}" \
+            --arg job_status "${{ needs.playwright-tests.result }}" \
+            '{timestamp: $ts, run_url: $run_url, sha: $sha, ref: $ref, job_status: $job_status}')
+
+          echo "$PRIOR_HISTORY" | jq --argjson entry "$NEW_ENTRY" '. + [$entry]' > playwright-report/history.json
+
+      # Upload playwright-report/ as the Pages artifact
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: playwright-report/
+
+      # Deploy to GitHub Pages
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    env:
+      CI: true
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Run npm audit
+        id: audit
+        run: |
+          npm audit --audit-level=high --json > audit-report.json 2>&1 || true
+
+      - name: Write summary report
+        if: always()
+        run: |
+          echo "## Security Scan — npm audit" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          CRITICAL=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.critical||0)")
+          HIGH=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.high||0)")
+          MODERATE=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.moderate||0)")
+          LOW=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.low||0)")
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "| -------- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| High     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Low      | $LOW |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail on high or critical vulnerabilities
+        run: npm audit --audit-level=high
