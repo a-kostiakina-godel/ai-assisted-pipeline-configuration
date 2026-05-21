@@ -86,3 +86,44 @@ jobs:
                 ]
               }]
             }'
+
+  security-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: false
+    env:
+      CI: true
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Run npm audit
+        id: audit
+        run: |
+          npm audit --audit-level=high --json > audit-report.json 2>&1 || true
+
+      - name: Write summary report
+        if: always()
+        run: |
+          echo "## Security Scan — npm audit" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          CRITICAL=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.critical||0)")
+          HIGH=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.high||0)")
+          MODERATE=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.moderate||0)")
+          LOW=$(cat audit-report.json | node -e "const d=require('fs').readFileSync('/dev/stdin','utf8');const r=JSON.parse(d);const v=r.metadata?.vulnerabilities||{};console.log(v.low||0)")
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "| -------- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| High     | $HIGH |" >> $GITHUB_STEP_SUMMARY
+          echo "| Moderate | $MODERATE |" >> $GITHUB_STEP_SUMMARY
+          echo "| Low      | $LOW |" >> $GITHUB_STEP_SUMMARY
+
+      - name: Fail on high or critical vulnerabilities
+        run: npm audit --audit-level=high
